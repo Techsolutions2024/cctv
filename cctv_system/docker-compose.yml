@@ -1,0 +1,95 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: cctv_postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cctv_db}
+      POSTGRES_USER: ${POSTGRES_USER:-cctv_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cctv_password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/config/database.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - cctv_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cctv_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for caching and message queue
+  redis:
+    image: redis:7-alpine
+    container_name: cctv_redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - cctv_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cctv_backend
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cctv_user}:${POSTGRES_PASSWORD:-cctv_password}@postgres:5432/${POSTGRES_DB:-cctv_db}
+      REDIS_URL: redis://redis:6379
+      SECRET_KEY: ${SECRET_KEY:-your-secret-key-change-in-production}
+      STORAGE_PATH: /app/data/recordings
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ./backend:/app
+      - ./data/recordings:/app/data/recordings
+      - ./data/configs:/app/data/configs
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - cctv_network
+    restart: unless-stopped
+
+  # Frontend Web App
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: cctv_frontend
+    environment:
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+      VITE_WS_URL: ${VITE_WS_URL:-ws://localhost:8000}
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - cctv_network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  cctv_network:
+    driver: bridge
